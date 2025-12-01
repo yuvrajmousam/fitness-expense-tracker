@@ -4,18 +4,21 @@ from datetime import date
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ---------- GOOGLE SHEETS SETUP ----------
+# ---------- CONFIG ----------
+COLUMNS = ["date", "category", "description", "amount",
+           "payment_method", "frequency", "notes"]
 
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-COLUMNS = ["date", "category", "description", "amount", "payment_method", "frequency", "notes"]
+
+# ---------- GOOGLE SHEETS HELPERS ----------
 
 @st.cache_resource
 def get_worksheet():
-    # Credentials are stored in Streamlit secrets
+    # Credentials from Streamlit secrets
     creds_dict = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
     client = gspread.authorize(creds)
@@ -23,15 +26,21 @@ def get_worksheet():
     sheet_id = st.secrets["google_sheets"]["sheet_id"]
     sh = client.open_by_key(sheet_id)
 
-    # Use first sheet
     ws = sh.sheet1
 
-    # Ensure header row exists
+    # Ensure there is a proper header row in A1:G1
     existing = ws.get_all_values()
     if not existing:
         ws.append_row(COLUMNS)
+    else:
+        first_row = existing[0]
+        normalized = [c.strip().lower() for c in first_row]
+        if normalized != COLUMNS:
+            # Overwrite row 1 with the correct header
+            ws.update("A1:G1", [COLUMNS])
 
     return ws
+
 
 def add_expense(date_val, category, desc, amount, payment_method, frequency, notes):
     ws = get_worksheet()
@@ -44,60 +53,40 @@ def add_expense(date_val, category, desc, amount, payment_method, frequency, not
         frequency,
         notes,
     ]
+    # always writes from column A onwards in next empty row
     ws.append_row(row)
+
 
 def get_expenses(start_date=None, end_date=None, category=None):
     ws = get_worksheet()
 
     try:
-        values = ws.get_all_values()
-    except Exception as e:
+        # Use header in row 1 and data from row 2+
+        rows = ws.get_all_records()  # list of dicts, keys from header row
+    except Exception:
         st.error("❌ Problem reading data from Google Sheets.")
-        st.write("Please check that:")
-        st.write("- The sheet is shared with the service account (Editor access)")
-        st.write("- The sheet ID in secrets is correct")
         st.stop()
 
-    # If sheet is completely empty
-    if not values:
+    if not rows:
         return pd.DataFrame(columns=COLUMNS)
 
-    # Decide: does the sheet already have a header row?
-    first_row = values[0]
-    lowered = [str(x).strip().lower() for x in first_row]
+    df = pd.DataFrame(rows)
 
-    has_header = "date" in lowered and "category" in lowered
+    # Ensure all expected columns exist
+    for col in COLUMNS:
+        if col not in df.columns:
+            df[col] = None
 
-    if has_header:
-        data_rows = values[1:]
-    else:
-        # No header row, treat ALL rows as data
-        data_rows = values
+    df = df[COLUMNS]
 
-    # Normalise rows to the expected length
-    normalized_rows = []
-    for row in data_rows:
-        row = list(row)
-        if len(row) < len(COLUMNS):
-            row = row + [""] * (len(COLUMNS) - len(row))
-        else:
-            row = row[:len(COLUMNS)]
-        normalized_rows.append(row)
-
-    if not normalized_rows:
-        return pd.DataFrame(columns=COLUMNS)
-
-    # Build DataFrame with our fixed header
-    df = pd.DataFrame(normalized_rows, columns=COLUMNS)
-
-    # Convert types
+    # Types
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
-    # Drop rows with no valid date
+    # Drop rows without valid date
     df = df.dropna(subset=["date"])
 
-    # Apply filters
+    # Filters
     if start_date:
         start_ts = pd.to_datetime(start_date)
         df = df[df["date"] >= start_ts]
@@ -109,7 +98,7 @@ def get_expenses(start_date=None, end_date=None, category=None):
     if category and category != "All":
         df = df[df["category"] == category]
 
-    # Latest first
+    # Sort latest first
     df = df.sort_values(by="date", ascending=False)
 
     return df
@@ -141,18 +130,23 @@ def main():
                 "Coaching",
                 "Medical/Physio",
                 "Luxury Items (Shoes/Clothes etc.)",
-                "Other"
+                "Other",
             ])
         with col2:
-            payment_method = st.selectbox("Payment Method", ["UPI", "Card", "Cash", "Other"])
+            payment_method = st.selectbox(
+                "Payment Method", ["UPI", "Card", "Cash", "Other"]
+            )
             frequency = st.selectbox("Frequency", ["One-time", "Monthly", "Yearly"])
-        
-        description = st.text_input("Description", placeholder="e.g. Monthly gym fee, Whey protein 1kg")
+
+        description = st.text_input(
+            "Description", placeholder="e.g. Monthly gym fee, Whey protein 1kg"
+        )
         notes = st.text_area("Notes (optional)")
 
         if st.button("Save Expense"):
             if amount > 0:
-                add_expense(exp_date, category, description, amount, payment_method, frequency, notes)
+                add_expense(exp_date, category, description,
+                            amount, payment_method, frequency, notes)
                 st.success("Expense saved ✅ (stored in Google Sheets)")
             else:
                 st.error("Amount must be greater than 0.")
@@ -179,8 +173,8 @@ def main():
                     "Coaching",
                     "Medical/Physio",
                     "Luxury Items (Shoes/Clothes etc.)",
-                    "Other"
-                ]
+                    "Other",
+                ],
             )
 
         df = get_expenses(start_date, end_date, filter_category)
@@ -193,7 +187,12 @@ def main():
             st.write(f"**Total in this view: ₹{total:,.2f}**")
 
             csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Download as CSV", data=csv, file_name="fitness_expenses.csv", mime="text/csv")
+            st.download_button(
+                "⬇️ Download as CSV",
+                data=csv,
+                file_name="fitness_expenses.csv",
+                mime="text/csv",
+            )
         else:
             st.info("No expenses found for the selected filters.")
 
@@ -206,7 +205,6 @@ def main():
             return
 
         df_dash = df.copy()
-        df_dash["date"] = pd.to_datetime(df_dash["date"])
         df_dash["month"] = df_dash["date"].dt.to_period("M").astype(str)
 
         col1, col2 = st.columns(2)
@@ -223,8 +221,6 @@ def main():
         st.subheader("Raw Data")
         st.dataframe(df)
 
+
 if __name__ == "__main__":
     main()
-
-
-
