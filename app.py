@@ -48,16 +48,40 @@ def add_expense(date_val, category, desc, amount, payment_method, frequency, not
 
 def get_expenses(start_date=None, end_date=None, category=None):
     ws = get_worksheet()
-    rows = ws.get_all_records()  # returns list of dicts using header row
 
-    if not rows:
+    try:
+        values = ws.get_all_values()
+    except Exception as e:
+        st.error("❌ Problem reading data from Google Sheets.")
+        st.write("Please check that:")
+        st.write("- The sheet is shared with the service account (Editor access)")
+        st.write("- The sheet ID in secrets is correct")
+        st.stop()
+
+    # If sheet is empty or only header
+    if not values or len(values) == 1:
         return pd.DataFrame(columns=COLUMNS)
 
-    df = pd.DataFrame(rows)
+    header = values[0]
+    rows = values[1:]
 
-    # Ensure correct dtypes
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    # Build DataFrame from raw values
+    df = pd.DataFrame(rows, columns=header)
+
+    # Make sure all expected columns exist (in case of manual edits)
+    for col in COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+
+    # Keep only expected columns and in correct order
+    df = df[COLUMNS]
+
+    # Convert types
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+
+    # Drop rows with no date (if any)
+    df = df.dropna(subset=["date"])
 
     # Apply filters
     if start_date:
@@ -182,3 +206,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
