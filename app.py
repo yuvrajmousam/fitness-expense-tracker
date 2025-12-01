@@ -58,32 +58,46 @@ def get_expenses(start_date=None, end_date=None, category=None):
         st.write("- The sheet ID in secrets is correct")
         st.stop()
 
-    # If sheet is empty or only header
-    if not values or len(values) == 1:
+    # If sheet is completely empty
+    if not values:
         return pd.DataFrame(columns=COLUMNS)
 
-    header = values[0]
-    rows = values[1:]
+    # Decide: does the sheet already have a header row?
+    first_row = values[0]
+    lowered = [str(x).strip().lower() for x in first_row]
 
-    # Build DataFrame from raw values
-    df = pd.DataFrame(rows, columns=header)
+    has_header = "date" in lowered and "category" in lowered
 
-    # Make sure all expected columns exist (in case of manual edits)
-    for col in COLUMNS:
-        if col not in df.columns:
-            df[col] = None
+    if has_header:
+        data_rows = values[1:]
+    else:
+        # No header row, treat ALL rows as data
+        data_rows = values
 
-    # Keep only expected columns and in correct order
-    df = df[COLUMNS]
+    # Normalise rows to the expected length
+    normalized_rows = []
+    for row in data_rows:
+        row = list(row)
+        if len(row) < len(COLUMNS):
+            row = row + [""] * (len(COLUMNS) - len(row))
+        else:
+            row = row[:len(COLUMNS)]
+        normalized_rows.append(row)
+
+    if not normalized_rows:
+        return pd.DataFrame(columns=COLUMNS)
+
+    # Build DataFrame with our fixed header
+    df = pd.DataFrame(normalized_rows, columns=COLUMNS)
 
     # Convert types
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")  # <-- keep as pandas datetime
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
     # Drop rows with no valid date
     df = df.dropna(subset=["date"])
 
-    # Convert filter dates to pandas datetime too
+    # Apply filters
     if start_date:
         start_ts = pd.to_datetime(start_date)
         df = df[df["date"] >= start_ts]
@@ -95,10 +109,11 @@ def get_expenses(start_date=None, end_date=None, category=None):
     if category and category != "All":
         df = df[df["category"] == category]
 
-    # sort latest first
+    # Latest first
     df = df.sort_values(by="date", ascending=False)
 
     return df
+
 
 # ---------- STREAMLIT UI ----------
 
@@ -210,5 +225,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
