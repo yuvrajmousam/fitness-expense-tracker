@@ -60,24 +60,43 @@ def add_expense(date_val, category, desc, amount, payment_method, frequency, not
 def get_expenses(start_date=None, end_date=None, category=None):
     ws = get_worksheet()
 
-    try:
-        # Use header in row 1 and data from row 2+
-        rows = ws.get_all_records()  # list of dicts, keys from header row
-    except Exception:
-        st.error("❌ Problem reading data from Google Sheets.")
-        st.stop()
+    # Get ALL cell values (including header) in a very safe way
+    values = ws.get_all_values()
 
-    if not rows:
+    # Nothing in sheet
+    if not values:
         return pd.DataFrame(columns=COLUMNS)
 
-    df = pd.DataFrame(rows)
+    header = values[0]
+    data_rows = values[1:]
 
-    # Ensure all expected columns exist
-    for col in COLUMNS:
-        if col not in df.columns:
-            df[col] = None
+    # If there is only a header and no data
+    if not data_rows:
+        return pd.DataFrame(columns=COLUMNS)
 
-    df = df[COLUMNS]
+    # Check if first row is really our header; if not, treat ALL rows as data
+    normalized_header = [str(x).strip().lower() for x in header]
+    expected_header = [c for c in COLUMNS]  # already lowercase
+
+    if normalized_header != expected_header:
+        # No proper header – treat all rows as data
+        data_rows = values
+
+    # Normalise every row to length = number of columns
+    normalized_rows = []
+    for row in data_rows:
+        row = list(row)
+        if len(row) < len(COLUMNS):
+            row = row + [""] * (len(COLUMNS) - len(row))
+        else:
+            row = row[:len(COLUMNS)]
+        normalized_rows.append(row)
+
+    if not normalized_rows:
+        return pd.DataFrame(columns=COLUMNS)
+
+    # Build dataframe with fixed header
+    df = pd.DataFrame(normalized_rows, columns=COLUMNS)
 
     # Types
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -88,20 +107,17 @@ def get_expenses(start_date=None, end_date=None, category=None):
 
     # Filters
     if start_date:
-        start_ts = pd.to_datetime(start_date)
-        df = df[df["date"] >= start_ts]
-
+        df = df[df["date"] >= pd.to_datetime(start_date)]
     if end_date:
-        end_ts = pd.to_datetime(end_date)
-        df = df[df["date"] <= end_ts]
-
+        df = df[df["date"] <= pd.to_datetime(end_date)]
     if category and category != "All":
         df = df[df["category"] == category]
 
-    # Sort latest first
+    # Latest first
     df = df.sort_values(by="date", ascending=False)
 
     return df
+
 
 
 # ---------- STREAMLIT UI ----------
@@ -224,3 +240,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
