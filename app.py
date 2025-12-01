@@ -77,17 +77,21 @@ def get_expenses(start_date=None, end_date=None, category=None):
     df = df[COLUMNS]
 
     # Convert types
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")  # <-- keep as pandas datetime
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
-    # Drop rows with no date (if any)
+    # Drop rows with no valid date
     df = df.dropna(subset=["date"])
 
-    # Apply filters
+    # Convert filter dates to pandas datetime too
     if start_date:
-        df = df[df["date"] >= start_date]
+        start_ts = pd.to_datetime(start_date)
+        df = df[df["date"] >= start_ts]
+
     if end_date:
-        df = df[df["date"] <= end_date]
+        end_ts = pd.to_datetime(end_date)
+        df = df[df["date"] <= end_ts]
+
     if category and category != "All":
         df = df[df["category"] == category]
 
@@ -206,4 +210,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
