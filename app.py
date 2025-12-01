@@ -1,64 +1,81 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import date
+import gspread
+from google.oauth2.service_account import Credentials
 
-# ---------- DB SETUP ----------
-def get_connection():
-    conn = sqlite3.connect("fitness_expenses.db", check_same_thread=False)
-    return conn
+# ---------- GOOGLE SHEETS SETUP ----------
 
-def init_db():
-    conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT,
-            category TEXT,
-            description TEXT,
-            amount REAL,
-            payment_method TEXT,
-            frequency TEXT,
-            notes TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-def add_expense(date, category, desc, amount, payment_method, frequency, notes):
-    conn = get_connection()
-    conn.execute("""
-        INSERT INTO expenses (date, category, description, amount, payment_method, frequency, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (date, category, desc, amount, payment_method, frequency, notes))
-    conn.commit()
-    conn.close()
+COLUMNS = ["date", "category", "description", "amount", "payment_method", "frequency", "notes"]
+
+@st.cache_resource
+def get_worksheet():
+    # Credentials are stored in Streamlit secrets
+    creds_dict = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
+    client = gspread.authorize(creds)
+
+    sheet_id = st.secrets["google_sheets"]["sheet_id"]
+    sh = client.open_by_key(sheet_id)
+
+    # Use first sheet
+    ws = sh.sheet1
+
+    # Ensure header row exists
+    existing = ws.get_all_values()
+    if not existing:
+        ws.append_row(COLUMNS)
+
+    return ws
+
+def add_expense(date_val, category, desc, amount, payment_method, frequency, notes):
+    ws = get_worksheet()
+    row = [
+        str(date_val),
+        category,
+        desc,
+        float(amount),
+        payment_method,
+        frequency,
+        notes,
+    ]
+    ws.append_row(row)
 
 def get_expenses(start_date=None, end_date=None, category=None):
-    conn = get_connection()
-    query = "SELECT * FROM expenses WHERE 1=1"
-    params = []
+    ws = get_worksheet()
+    rows = ws.get_all_records()  # returns list of dicts using header row
 
+    if not rows:
+        return pd.DataFrame(columns=COLUMNS)
+
+    df = pd.DataFrame(rows)
+
+    # Ensure correct dtypes
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+
+    # Apply filters
     if start_date:
-        query += " AND date >= ?"
-        params.append(str(start_date))
+        df = df[df["date"] >= start_date]
     if end_date:
-        query += " AND date <= ?"
-        params.append(str(end_date))
+        df = df[df["date"] <= end_date]
     if category and category != "All":
-        query += " AND category = ?"
-        params.append(category)
+        df = df[df["category"] == category]
 
-    query += " ORDER BY date DESC"
-    df = pd.read_sql_query(query, conn, params=params)
-    conn.close()
+    # sort latest first
+    df = df.sort_values(by="date", ascending=False)
+
     return df
 
 # ---------- STREAMLIT UI ----------
+
 def main():
     st.set_page_config(page_title="Fitness Expense Tracker", page_icon="💪")
-
-    init_db()
 
     st.title("💪 Fitness & Gym Expense Tracker")
 
@@ -92,8 +109,8 @@ def main():
 
         if st.button("Save Expense"):
             if amount > 0:
-                add_expense(str(exp_date), category, description, amount, payment_method, frequency, notes)
-                st.success("Expense saved ✅")
+                add_expense(exp_date, category, description, amount, payment_method, frequency, notes)
+                st.success("Expense saved ✅ (stored in Google Sheets)")
             else:
                 st.error("Amount must be greater than 0.")
 
@@ -145,17 +162,18 @@ def main():
             st.info("No data yet. Add some expenses first.")
             return
 
-        df["date"] = pd.to_datetime(df["date"])
-        df["month"] = df["date"].dt.to_period("M").astype(str)
+        df_dash = df.copy()
+        df_dash["date"] = pd.to_datetime(df_dash["date"])
+        df_dash["month"] = df_dash["date"].dt.to_period("M").astype(str)
 
         col1, col2 = st.columns(2)
         with col1:
-            by_month = df.groupby("month")["amount"].sum().reset_index()
+            by_month = df_dash.groupby("month")["amount"].sum().reset_index()
             st.subheader("Monthly Total Spend")
             st.bar_chart(by_month.set_index("month"))
 
         with col2:
-            by_cat = df.groupby("category")["amount"].sum().reset_index()
+            by_cat = df_dash.groupby("category")["amount"].sum().reset_index()
             st.subheader("Spend by Category")
             st.bar_chart(by_cat.set_index("category"))
 
