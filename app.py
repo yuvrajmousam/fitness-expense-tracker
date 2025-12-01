@@ -28,61 +28,67 @@ def get_worksheet():
 
     ws = sh.sheet1
 
-    # Ensure there is a proper header row in A1:G1
-    existing = ws.get_all_values()
-    if not existing:
-        ws.append_row(COLUMNS)
+    # Do NOT trust what is there; just ensure header in A1:G1
+    values = ws.get_all_values()
+    if not values:
+        # completely empty sheet
+        ws.update("A1:G1", [COLUMNS])
     else:
-        first_row = existing[0]
-        normalized = [c.strip().lower() for c in first_row]
-        if normalized != COLUMNS:
-            # Overwrite row 1 with the correct header
-            ws.update("A1:G1", [COLUMNS])
+        # force header to be correct
+        ws.update("A1:G1", [COLUMNS])
 
     return ws
 
 
 def add_expense(date_val, category, desc, amount, payment_method, frequency, notes):
     ws = get_worksheet()
+
+    # Get existing values to know next row index
+    values = ws.get_all_values()
+    if not values:
+        # should not happen because get_worksheet sets header,
+        # but just in case:
+        ws.update("A1:G1", [COLUMNS])
+        next_row = 2
+    else:
+        next_row = len(values) + 1  # next empty row
+
+    # Build row exactly matching A..G
     row = [
         str(date_val),
         category,
-        desc,
+        desc or "",
         float(amount),
         payment_method,
         frequency,
-        notes,
+        notes or "",
     ]
-    # always writes from column A onwards in next empty row
-    ws.append_row(row)
+
+    # FORCE write to columns A..G of that row
+    ws.update(f"A{next_row}:G{next_row}", [row])
 
 
 def get_expenses(start_date=None, end_date=None, category=None):
     ws = get_worksheet()
 
-    # Get ALL cell values (including header) in a very safe way
     values = ws.get_all_values()
 
     # Nothing in sheet
-    if not values:
+    if not values or len(values) == 1:
         return pd.DataFrame(columns=COLUMNS)
 
     header = values[0]
     data_rows = values[1:]
 
-    # If there is only a header and no data
-    if not data_rows:
-        return pd.DataFrame(columns=COLUMNS)
-
-    # Check if first row is really our header; if not, treat ALL rows as data
+    # If somehow header is wrong, treat all rows as data
     normalized_header = [str(x).strip().lower() for x in header]
-    expected_header = [c for c in COLUMNS]  # already lowercase
+    if normalized_header != COLUMNS:
+        data_rows = values  # ignore header row
+        header = COLUMNS
+    else:
+        header = COLUMNS
 
-    if normalized_header != expected_header:
-        # No proper header – treat all rows as data
-        data_rows = values
-
-    # Normalise every row to length = number of columns
+    # Normalise rows to correct length
     normalized_rows = []
     for row in data_rows:
         row = list(row)
@@ -95,14 +101,13 @@ def get_expenses(start_date=None, end_date=None, category=None):
     if not normalized_rows:
         return pd.DataFrame(columns=COLUMNS)
 
-    # Build dataframe with fixed header
     df = pd.DataFrame(normalized_rows, columns=COLUMNS)
 
     # Types
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
 
-    # Drop rows without valid date
+    # Drop rows with no valid date
     df = df.dropna(subset=["date"])
 
     # Filters
@@ -117,7 +122,6 @@ def get_expenses(start_date=None, end_date=None, category=None):
     df = df.sort_values(by="date", ascending=False)
 
     return df
-
 
 
 # ---------- STREAMLIT UI ----------
@@ -240,4 +244,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
